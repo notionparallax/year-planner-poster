@@ -1,69 +1,789 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-<meta name="description" content="Year-view planner for your Google Calendar events. Free and open-source."/>
-<meta name="google-site-verification" content="opI-WEBlK2jop1tsX3bOa5eD8lj_J70Ybqag-j8gPgc" />
-<link rel="icon" href="vp.png">
-<link rel="stylesheet" type="text/css" href="https://fonts.googleapis.com/css?family=Material+Icons">
-<title>visual-planner | Google Calendar Year View</title>
+<meta charset="UTF-8">
+<title>Year Planner Poster</title>
+<script src="https://cdn.jsdelivr.net/npm/ical.js@1.5.0/build/ical.min.js"></script>
 <style>
-	body {margin: 2em;}
-	a {text-decoration: none; color: #3f67dd;}
-	h4 {padding-top: 1em;}
-	.material-icons {font-size: 1em; vertical-align: sub; padding-right: 0.5em;}
+/* ─── Variables ─────────────────────────────────────────────────── */
+:root {
+  --label-w:     50mm;
+  --header-h:    12mm;
+  --month-h:     67mm;   /* (821 - 12) / 12 */
+  --event-h:     4.2mm;
+  --daynum-h:    9mm;
+  --timestrip-h: 35mm;
+  --weekend-bg:  #f2f2f2;
+  --border:      0.25mm solid #ccc;
+  --today-bg:    #e8f0fe;
+  --today-color: #1a73e8;
+}
+
+/* ─── Print page ─────────────────────────────────────────────────── */
+@page {
+  size: A0 landscape;
+  margin: 10mm;
+}
+
+/* ─── Reset ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, Helvetica, sans-serif; background: #ccc; }
+
+/* ─── Setup UI (hidden on print) ─────────────────────────────────── */
+#setup {
+  background: white;
+  border-bottom: 1px solid #bbb;
+  padding: 10px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+#setup h1 { font-size: 15px; line-height: 1; }
+#cal-list { display: flex; flex-direction: column; gap: 4px; }
+.cal-entry { display: flex; align-items: center; gap: 6px; }
+.cal-entry input[type=text] {
+  width: 380px; font-size: 11px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px;
+}
+.cal-entry input[type=color] { width: 28px; height: 24px; padding: 1px; border: 1px solid #ccc; cursor: pointer; border-radius: 3px; }
+.cal-entry label { font-size: 11px; color: #555; }
+#setup button { padding: 5px 12px; font-size: 12px; cursor: pointer; border-radius: 4px; border: 1px solid #aaa; }
+#load-btn { background: #1a73e8; color: white; border-color: #1557b0; font-weight: bold; }
+#setup .hint { font-size: 11px; color: #888; line-height: 1.5; }
+#setup .hint code { background: #f4f4f4; padding: 1px 4px; border-radius: 2px; }
+#filter-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+#filter-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* ─── Poster wrapper (scroll on screen) ──────────────────────────── */
+#poster-wrap {
+  padding: 10mm;
+  overflow: auto;
+}
+
+/* ─── Poster ──────────────────────────────────────────────────────── */
+#poster {
+  width: 1169mm;
+  background: white;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Header row (weekday names) ─────────────────────────────────── */
+#poster .hdr-row {
+  display: grid;
+  grid-template-columns: var(--label-w) repeat(42, 1fr);
+  height: var(--header-h);
+  border-bottom: 0.5mm solid #666;
+}
+.hdr-label { /* empty top-left corner */ }
+.hdr-dow {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 3mm; font-weight: bold; color: #444;
+  border-right: var(--border);
+}
+.hdr-dow.weekend { background: var(--weekend-bg); color: #888; }
+
+/* ─── Month row ──────────────────────────────────────────────────── */
+.month-row {
+  display: flex;
+  flex-direction: row;
+  min-height: var(--month-h);
+  border-bottom: 0.4mm solid #999;
+}
+.month-label {
+  width: var(--label-w);
+  flex-shrink: 0;
+  display: flex; align-items: flex-start; justify-content: flex-end;
+  padding: 2mm 3mm 0 0;
+  font-size: 5.5mm; font-weight: bold; color: #222;
+  border-right: 0.5mm solid #999;
+  line-height: 1.2;
+}
+.month-label .year-sub { font-size: 3.2mm; font-weight: normal; color: #888; display: block; }
+
+/* ─── Month grid: row 1=day numbers, row 2=time strip (fills remaining), rows 3+=all-day chips ── */
+.month-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(42, 1fr);
+  grid-auto-rows: var(--event-h);
+  grid-template-rows: var(--daynum-h) 1fr;
+  min-height: var(--month-h);
+  overflow: visible;
+  align-content: start;
+}
+
+/* ─── Day number cells ───────────────────────────────────────────── */
+.day-num {
+  grid-row: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 1.5mm;
+  font-size: 3mm;
+  color: #666;
+  border-right: var(--border);
+  position: relative;
+}
+.day-num.weekend { background: var(--weekend-bg); }
+.day-num.today {
+  color: var(--today-color);
+  font-weight: bold;
+}
+.day-num .num-circle {
+  background: var(--today-color);
+  color: white;
+  border-radius: 50%;
+  width: 5mm; height: 5mm;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.8mm;
+}
+
+/* Column guides: subtle vertical lines + weekend shading, span full month height */
+.col-guide {
+  grid-row: 1 / -1;
+  border-right: 0.15mm solid #e8e8e8;
+  pointer-events: none;
+  z-index: 0;
+}
+.col-guide.weekend { background: var(--weekend-bg); }
+
+/* ─── Time strip (row 2): positioned timed event blocks ─────────── */
+.time-cell {
+  grid-row: 2;
+  position: relative;
+  overflow: hidden;         /* clip labels and blocks at column edge */
+  border-right: 0.15mm solid #e8e8e8;
+  background: transparent;  /* col-guide handles weekend bg */
+}
+/* Clip layer: sits inside time-cell, clips the coloured blocks only */
+.time-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.time-block {
+  position: absolute;
+  border-radius: 0.6mm;
+  min-height: 1.5mm;
+}
+.tb-label {
+  position: absolute;
+  white-space: nowrap;      /* default: no wrap for short events */
+  font-size: 2mm;
+  line-height: 1.3;
+  color: #111;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgba(255,255,255,0.55);
+  padding: 0 0.5mm;
+  border-radius: 0.3mm;
+  z-index: 10;
+}
+.tb-label.wrap {
+  white-space: normal;      /* wrap for events > 60 min */
+  word-break: break-word;
+}
+
+/* ─── Events ─────────────────────────────────────────────────────── */
+.event-bar {
+  /* grid-column and grid-row set by JS */
+  border-radius: 1mm;
+  display: flex; align-items: center;
+  padding: 0 1.2mm;
+  font-size: 2.5mm;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0.4mm 0;
+  z-index: 1;
+  min-width: 0;
+  cursor: default;
+}
+/* Multi-day: remove radius on continuation edges */
+.event-bar.cont-left  { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+.event-bar.cont-right { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+
+/* Free events (TRANSP:TRANSPARENT) — outline only */
+.event-bar.free {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0.4mm solid currentColor;
+  opacity: 0.8;
+}
+.time-block.free {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0.4mm solid var(--blk-colour, #888);
+}
+
+
+/* ─── Print overrides ────────────────────────────────────────────── */
+@media print {
+  body { background: white; }
+  #setup { display: none !important; }
+  #poster-wrap { padding: 0; overflow: visible; background: none; }
+  #poster { width: 100%; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
 </style>
 </head>
 <body>
-<table>
-<tr>
-<td>
-	<a href="vp.htm"><img src="vp.png" style="padding-right: 1em;"/></a>
-</td>
-<td>
-	<h1>visual-planner</h1>
-	<p>Year-view planner for Google Calendar</p>
-</td>
-</tr>
-</table>
-<p>Open <a href="vp.htm" target="_blank">visual-planner</a>.</p>
-<p>The planner only shows events from calendars which are currently selected and visible in Google Calendar. Any of the loaded calendars can then be hidden by clicking the relevant button at the bottom of the page.</p>
-<div>
-	<p><span class="material-icons">view_column</span>Display the planner in Column layout.</p>
-	<p><span class="material-icons">view_list</span>Display the planner in List layout.</p>
-	<p><span class="material-icons">calendar_view_day</span>Expand/collapse event labels.</p>
-	<p><span class="material-icons">dark_mode</span>Toggle Dark Mode on/off.</p>
-	<p><span class="material-icons">refresh</span>Sync events with Google Calendar.</p>
-	<p><span class="material-icons">sync_alt</span>Continue scrolling by reloading at the current position.</p>
-	<p><span class="material-icons">print</span>Open print-friendly page.</p>
-	<p><span class="material-icons">settings</span>Settings.</p>
-	<p><span class="material-icons">backup</span>Save settings.</p>
-	<p><span class="material-icons">cancel</span>Cancel changes to settings.</p>
+
+<!-- ── Setup UI ─────────────────────────────────────────────────────── -->
+<div id="setup">
+  <div>
+    <h1>Year Planner Poster</h1>
+    <div class="hint" style="margin-top:6px">
+      1. Run proxy: <code>python proxy.py</code> &nbsp;|&nbsp;
+      2. Get iCal URL: Google Calendar → Settings → your calendar → <em>Secret address in iCal format</em>
+    </div>
+  </div>
+
+  <div>
+    <div id="cal-list">
+      <div class="cal-entry">
+        <input type="color" value="#1a73e8" title="Calendar colour">
+        <input type="text" placeholder="Secret iCal URL from Google Calendar…">
+        <button class="rm-btn" title="Remove">✕</button>
+        <label><input type="checkbox" class="allday-only"> All-day only</label>
+      </div>
+    </div>
+    <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+      <button id="add-cal-btn">+ Add calendar</button>
+      <button id="load-btn">Load calendars</button>
+      <button id="rerender-btn" title="Re-render poster without re-fetching calendars">Re-render</button>
+      <span id="status" style="font-size:11px; color:#888;"></span>
+    </div>
+  </div>
+
 </div>
-<p>For more information please visit the <a href="https://groups.google.com/group/visual-planner-discuss">discussion group</a>.</p>
-<h4 id="privacy-policy">Privacy Policy</h4>
-<p>When you open visual-planner, you will be asked for permission to access your account in the following manner:<p>
-<ol>
-<li>
-	<p>View your calendars</p>
-	<p>Allowing this access enables visual-planner to display your calendar events in a year-view format that provides a much wider and more flexible overview of your future and past events than is available with Google Calendar.</p>
-	<p>visual-planner <b>DOES NOT</b> transfer, store or share any of this data or any other personal information.</p>
-</li>
-<li>
-	<p>View and manage its own configuration data in your Google Drive</p>
-	<p>Allowing this access enables visual-planner to remember your app settings for each session and across your devices. It <b>DOES NOT</b> grant visual-planner any kind of access to your Drive documents and files.</p>
-</li>
-</ol>
-<div style="padding-top: 2em; text-align: center;">
-	<p>This software project is funded by voluntary donation.</p>
-	<form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_top">
-	<input type="hidden" name="cmd" value="_donations" />
-	<input type="hidden" name="business" value="XP2TVRFHUYZQE" />
-	<input type="hidden" name="item_name" value="visual-planner" />
-	<input type="hidden" name="currency_code" value="GBP" />
-	<input type="image" src="https://www.paypalobjects.com/en_GB/i/btn/btn_donateCC_LG.gif" border="0" name="submit" title="PayPal - The safer, easier way to pay online!" alt="Donate with PayPal button" />
-	<img alt="" border="0" src="https://www.paypal.com/en_GB/i/scr/pixel.gif" width="1" height="1" />
-	</form>
+
+<!-- ── Poster ──────────────────────────────────────────────────────── -->
+<div id="poster-wrap">
+  <div id="poster"></div>
 </div>
+
+<script>
+'use strict';
+
+// ─── Constants ──────────────────────────────────────────────────────
+const PROXY = 'https://rough-shadow-85ab.ben-124.workers.dev/fetch';
+const MONTH_NAMES = ['January','February','March','April','May','June',
+                     'July','August','September','October','November','December'];
+const DOW_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']; // 0=Mon
+const CAL_COLOURS = ['#1a73e8','#e53935','#8e24aa','#0097a7','#f57c00','#388e3c','#5e35b1','#d81b60'];
+
+// ─── Setup UI ────────────────────────────────────────────────────────
+document.getElementById('add-cal-btn').addEventListener('click', () => {
+  const idx = document.querySelectorAll('.cal-entry').length;
+  const colour = CAL_COLOURS[idx % CAL_COLOURS.length];
+  const div = document.createElement('div');
+  div.className = 'cal-entry';
+  div.innerHTML = `
+    <input type="color" value="${colour}" title="Calendar colour">
+    <input type="text" placeholder="Secret iCal URL from Google Calendar…">
+    <button class="rm-btn" title="Remove">✕</button>
+    <label><input type="checkbox" class="allday-only"> All-day only</label>
+  `;
+  document.getElementById('cal-list').appendChild(div);
+});
+
+document.getElementById('cal-list').addEventListener('click', e => {
+  if (e.target.classList.contains('rm-btn')) {
+    const entries = document.querySelectorAll('.cal-entry');
+    if (entries.length > 1) e.target.closest('.cal-entry').remove();
+  }
+});
+
+document.getElementById('load-btn').addEventListener('click', loadCalendars);
+document.getElementById('rerender-btn').addEventListener('click', () => {
+  if (lastEvents) renderPoster(lastEvents);
+});
+
+// ─── localStorage helpers ────────────────────────────────────────────
+function saveUrls() {
+  const entries = [...document.querySelectorAll('.cal-entry')].map(entry => ({
+    url:      entry.querySelector('input[type=text]').value.trim(),
+    colour:   entry.querySelector('input[type=color]').value,
+    allday:   entry.querySelector('.allday-only').checked,
+  }));
+  localStorage.setItem('calEntries', JSON.stringify(entries));
+}
+
+function restoreUrls() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('calEntries') || '[]');
+    if (!saved.length) return;
+    const list = document.getElementById('cal-list');
+    list.innerHTML = '';
+    saved.forEach((entry, idx) => {
+      const div = document.createElement('div');
+      div.className = 'cal-entry';
+      div.innerHTML = `
+        <input type="color" value="${entry.colour || CAL_COLOURS[idx % CAL_COLOURS.length]}" title="Calendar colour">
+        <input type="text" placeholder="Secret iCal URL from Google Calendar…" value="${entry.url || ''}">
+        <button class="rm-btn" title="Remove">✕</button>
+        <label><input type="checkbox" class="allday-only"${entry.allday ? ' checked' : ''}> All-day only</label>
+      `;
+      list.appendChild(div);
+    });
+  } catch(e) { /* ignore corrupt storage */ }
+}
+
+restoreUrls();
+
+let lastEvents = null;
+
+
+// ─── Date helpers ────────────────────────────────────────────────────
+function today() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Returns 12-month range: [{year, month}…] starting from current month */
+function getMonths() {
+  const now = new Date();
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    months.push({ year: d.getFullYear(), month: d.getMonth() });
+  }
+  return months;
+}
+
+function daysInMonth(year, month) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+/** Day-of-week 0=Mon…6=Sun for a given date */
+function dow(year, month, day) {
+  return (new Date(year, month, day).getDay() + 6) % 7;
+}
+
+/** 1-based column within the 42-col month grid for a given day */
+function colForDay(day, startDow) {
+  return startDow + day; // startDow=0 means day 1 is column 1 (Mon)
+}
+
+/** Max columns needed across all months so we don't render blank trailing columns */
+function getGridCols(months) {
+  let max = 0;
+  for (const { year, month } of months) {
+    max = Math.max(max, dow(year, month, 1) + daysInMonth(year, month));
+  }
+  return max;
+}
+
+// ─── iCal fetch & parse ──────────────────────────────────────────────
+async function fetchIcal(url, colour, alldayOnly) {
+  const proxyUrl = `${PROXY}?url=${encodeURIComponent(url)}`;
+  const resp = await fetch(proxyUrl);
+  if (!resp.ok) throw new Error(`Proxy returned HTTP ${resp.status}`);
+  const text = await resp.text();
+  return parseIcal(text, colour, alldayOnly);
+}
+
+function parseIcal(text, colour, alldayOnly) {
+  const jcal = ICAL.parse(text);
+  const comp = new ICAL.Component(jcal);
+  const vevents = comp.getAllSubcomponents('vevent');
+
+  const range = getMonths();
+  const rangeStart = new Date(range[0].year, range[0].month, 1);
+  const last = range[range.length - 1];
+  const rangeEnd = new Date(last.year, last.month, daysInMonth(last.year, last.month));
+
+  const events = [];
+
+  for (const ve of vevents) {
+    const ev = new ICAL.Event(ve);
+    const allDay = ev.startDate && ev.startDate.isDate;
+
+    if (alldayOnly && !allDay) continue;
+
+    if (ev.isRecurring()) {
+      const transp = ve.getFirstPropertyValue('transp');
+      const free = transp === 'transparent';
+      const iter = ev.iterator();
+      let next;
+      let count = 0;
+      while ((next = iter.next()) && count < 500) {
+        count++;
+        const start = next.toJSDate();
+        if (start > rangeEnd) break;
+        const duration = ev.duration;
+        const endMs = start.getTime() + duration.toSeconds() * 1000;
+        const end = new Date(endMs);
+        if (end < rangeStart) continue;
+        const parsed = makeEvent(ev.summary || '(no title)', start, end, colour, allDay, free);
+        if (parsed) events.push(parsed);
+      }
+    } else {
+      const dtstart = ve.getFirstPropertyValue('dtstart');
+      if (!dtstart) continue;
+      const dtend = ve.getFirstPropertyValue('dtend') || ve.getFirstPropertyValue('dtstart');
+      const start = dtstart.toJSDate();
+      const end = dtend.toJSDate();
+      if (end < rangeStart || start > rangeEnd) continue;
+      const isAllDay = dtstart.isDate;
+      if (alldayOnly && !isAllDay) continue;
+      const transp = ve.getFirstPropertyValue('transp');
+      const free = transp === 'transparent';
+      const parsed = makeEvent(ev.summary || '(no title)', start, end, colour, isAllDay, free);
+      if (parsed) events.push(parsed);
+    }
+  }
+
+  return events;
+}
+
+function makeEvent(summary, jsStart, jsEnd, colour, allDay, free = false) {
+  const s = new Date(jsStart.getFullYear(), jsStart.getMonth(), jsStart.getDate());
+  let e;
+  if (allDay) {
+    // iCal all-day end is exclusive → subtract 1 day
+    e = new Date(jsEnd.getFullYear(), jsEnd.getMonth(), jsEnd.getDate());
+    e.setDate(e.getDate() - 1);
+    if (e < s) e = new Date(s);
+  } else {
+    e = new Date(jsEnd.getFullYear(), jsEnd.getMonth(), jsEnd.getDate());
+    if (e < s) e = new Date(s);
+  }
+  const startTime = allDay ? null : formatTime(jsStart);
+  return { summary, start: s, end: e, startHour: jsStart.getHours(), startMin: jsStart.getMinutes(), endHour: jsEnd.getHours(), endMin: jsEnd.getMinutes(), startTime, colour, allDay, free, multiDay: e > s };
+}
+
+function formatTime(d) {
+  let h = d.getHours(), m = d.getMinutes(), ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12 || 12;
+  return m === 0 ? `${h}${ampm}` : `${h}:${String(m).padStart(2,'0')}${ampm}`;
+}
+
+// ─── Event packing (greedy row assignment) ───────────────────────────
+/**
+ * Assigns a .gridRow (2-based, 2 = first event row below day numbers)
+ * to each event, packing them into the fewest rows with no overlaps.
+ * Events must already have .startCol and .endCol (1-based within 42-col grid).
+ */
+function packEvents(events) {
+  // rows[r] = array of {startCol, endCol}
+  const rows = [];
+  for (const ev of events) {
+    let placed = false;
+    for (let r = 0; r < rows.length; r++) {
+      const overlaps = rows[r].some(e => !(e.endCol < ev.startCol || e.startCol > ev.endCol));
+      if (!overlaps) {
+        rows[r].push({ startCol: ev.startCol, endCol: ev.endCol });
+        ev.gridRow = r + 3; // row 1=day numbers, row 2=time strip, all-day chips start at row 3
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      rows.push([{ startCol: ev.startCol, endCol: ev.endCol }]);
+      ev.gridRow = rows.length + 2;
+    }
+  }
+}
+
+/**
+ * Merge events from different calendars that share the same title and date range.
+ * Merged events carry a `colours` array; use a split gradient when rendering.
+ */
+function mergeEvents(events) {
+  const map = new Map();
+  for (const ev of events) {
+    const key = `${ev.summary.trim().toLowerCase()}|${ev.start.getTime()}|${ev.end.getTime()}`;
+    if (map.has(key)) {
+      const existing = map.get(key);
+      if (!existing.colours.includes(ev.colour)) existing.colours.push(ev.colour);
+    } else {
+      map.set(key, { ...ev, colours: [ev.colour] });
+    }
+  }
+  return [...map.values()];
+}
+
+// ─── Render ─────────────────────────────────────────────────────────
+function renderPoster(allEvents) {
+  const poster = document.getElementById('poster');
+  poster.innerHTML = '';
+
+  const months = getMonths();
+  const todayDate = today();
+  const gridCols = getGridCols(months);
+
+  // ── Header row ──
+  const hdrRow = document.createElement('div');
+  hdrRow.className = 'hdr-row';
+  hdrRow.style.gridTemplateColumns = `var(--label-w) repeat(${gridCols}, 1fr)`;
+  const hdrLabel = document.createElement('div');
+  hdrLabel.className = 'hdr-label';
+  hdrRow.appendChild(hdrLabel);
+  for (let i = 0; i < gridCols; i++) {
+    const d = document.createElement('div');
+    d.className = 'hdr-dow' + (i % 7 >= 5 ? ' weekend' : '');
+    d.textContent = DOW_NAMES[i % 7];
+    hdrRow.appendChild(d);
+  }
+  poster.appendChild(hdrRow);
+
+  // ── Month rows ──
+  for (const { year, month } of months) {
+    const numDays = daysInMonth(year, month);
+    const startDow = dow(year, month, 1); // 0=Mon
+    const monthStart = new Date(year, month, 1);
+    const monthEnd = new Date(year, month, numDays);
+
+    const row = document.createElement('div');
+    row.className = 'month-row';
+
+    // Month label
+    const label = document.createElement('div');
+    label.className = 'month-label';
+    label.innerHTML = `${MONTH_NAMES[month]}<span class="year-sub">${year}</span>`;
+    row.appendChild(label);
+
+    // Month grid
+    const grid = document.createElement('div');
+    grid.className = 'month-grid';
+    grid.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+
+    // Column guides: subtle vertical lines for all cols, shaded bg for weekends
+    for (let col = 1; col <= gridCols; col++) {
+      const colDow = (col - 1) % 7; // 0=Mon
+      const guide = document.createElement('div');
+      guide.className = 'col-guide' + (colDow >= 5 ? ' weekend' : '');
+      guide.style.gridColumn = col;
+      grid.appendChild(guide);
+    }
+
+    // Day number cells
+    for (let day = 1; day <= numDays; day++) {
+      const col = colForDay(day, startDow); // 1-based
+      const d = new Date(year, month, day);
+      const isToday = d.getTime() === todayDate.getTime();
+      const isWeekend = ((startDow + day - 1) % 7) >= 5;
+
+      const cell = document.createElement('div');
+      cell.className = 'day-num' + (isWeekend ? ' weekend' : '') + (isToday ? ' today' : '');
+      cell.style.gridColumn = col;
+      cell.style.gridRow = 1;
+
+      if (isToday) {
+        const circle = document.createElement('span');
+        circle.className = 'num-circle';
+        circle.textContent = day;
+        cell.appendChild(circle);
+      } else {
+        cell.textContent = day;
+      }
+      grid.appendChild(cell);
+    }
+
+    // ── Time strip (row 2): timed events as positioned blocks ──────
+    const WIN_START = 7 * 60;   // 7am in minutes
+    const WIN_END   = 20 * 60;  // 8pm in minutes
+    const WIN_DUR   = WIN_END - WIN_START;
+
+    // Build per-day map: day-of-month → [timed events]
+    const timedByDay = {};
+    allEvents
+      .filter(ev => !ev.allDay && ev.start <= monthEnd && ev.end >= monthStart)
+      .forEach(ev => {
+        const origStart = new Date(ev.start.getFullYear(), ev.start.getMonth(), ev.start.getDate());
+        const origEnd   = new Date(ev.end.getFullYear(),   ev.end.getMonth(),   ev.end.getDate());
+        const clampedStart = new Date(Math.max(ev.start.getTime(), monthStart.getTime()));
+        const clampedEnd   = new Date(Math.min(ev.end.getTime(),   monthEnd.getTime()));
+        let d = new Date(clampedStart.getFullYear(), clampedStart.getMonth(), clampedStart.getDate());
+        const last = new Date(clampedEnd.getFullYear(), clampedEnd.getMonth(), clampedEnd.getDate());
+        while (d <= last) {
+          const dayKey = d.getDate();
+          if (!timedByDay[dayKey]) timedByDay[dayKey] = [];
+          const startMins = d.getTime() === origStart.getTime() ? ev.startHour * 60 + ev.startMin : WIN_START;
+          const endMins   = d.getTime() === origEnd.getTime()   ? ev.endHour   * 60 + ev.endMin   : WIN_END;
+          timedByDay[dayKey].push({ ...ev, startMins, endMins });
+          d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+        }
+      });
+
+    // Render one time-cell per day
+    for (let day = 1; day <= numDays; day++) {
+      const col = colForDay(day, startDow);
+      const isWeekend = ((startDow + day - 1) % 7) >= 5;
+      const cell = document.createElement('div');
+      cell.className = 'time-cell';   // no weekend class — col-guide handles bg
+      cell.style.gridColumn = col;
+
+      const dayEvents = (timedByDay[day] || [])
+        .filter(ev => ev.startMins < WIN_END && ev.endMins > WIN_START)
+        .sort((a, b) => a.startMins - b.startMins);
+
+      if (dayEvents.length) {
+        // Greedy lane assignment so overlapping events sit side-by-side
+        const laneEnds = [];
+        for (const ev of dayEvents) {
+          let lane = laneEnds.findIndex(end => end <= ev.startMins);
+          if (lane === -1) { lane = laneEnds.length; laneEnds.push(0); }
+          laneEnds[lane] = ev.endMins;
+          ev._lane = lane;
+        }
+        const numLanes = laneEnds.length;
+
+        // One clip-wrapper per cell: clips blocks at 7am/8pm boundary
+        const clip = document.createElement('div');
+        clip.className = 'time-clip';
+        cell.appendChild(clip);
+
+        for (const ev of dayEvents) {
+          const topPct    = Math.max(0,   (ev.startMins - WIN_START) / WIN_DUR) * 100;
+          const botPct    = Math.min(100, (ev.endMins   - WIN_START) / WIN_DUR) * 100;
+          const heightPct = Math.max(botPct - topPct, 3);
+          const leftPct   = (ev._lane / numLanes) * 100;
+          const widthPct  = (1 / numLanes) * 100;
+
+          // Coloured block (clipped by .time-clip)
+          const block = document.createElement('div');
+          block.className = 'time-block' + (ev.free ? ' free' : '');
+          if (ev.free) block.style.setProperty('--blk-colour', ev.colour);
+          block.style.top    = `${topPct}%`;
+          block.style.height = `${heightPct}%`;
+          block.style.left   = `${leftPct}%`;
+          block.style.width  = `${widthPct}%`;
+          if (ev.colours && ev.colours.length > 1) {
+            const n = ev.colours.length;
+            const stops = ev.colours.flatMap((c, i) =>
+              [`${c} ${(i*100/n).toFixed(1)}%`, `${c} ${((i+1)*100/n).toFixed(1)}%`]
+            );
+            block.style.backgroundImage = `linear-gradient(to right, ${stops.join(', ')})`;
+          } else {
+            block.style.backgroundColor = ev.colour;
+          }
+          block.title = `${ev.summary}\n${ev.startTime}`;
+          clip.appendChild(block);
+
+          // Label positioned to match block, width-constrained so it clips at cell edge
+          const durationMins = ev.endMins - ev.startMins;
+          const label = document.createElement('span');
+          label.className = 'tb-label' + (durationMins > 60 ? ' wrap' : '');
+          label.style.top   = `calc(${topPct}% + 0.3mm)`;
+          label.style.left  = `calc(${leftPct}% + 0.4mm)`;
+          label.style.width = `calc(${widthPct}% - 0.8mm)`;
+          label.textContent = `${ev.startTime} ${ev.summary}`;
+          cell.appendChild(label);
+        }
+      }
+      grid.appendChild(cell);
+    }
+
+    // ── All-day event bars (rows 3+) ────────────────────────────────
+    const monthEvents = allEvents
+      .filter(ev => ev.allDay && ev.start <= monthEnd && ev.end >= monthStart)
+      .map(ev => {
+        const evStart = new Date(Math.max(ev.start.getTime(), monthStart.getTime()));
+        const evEnd   = new Date(Math.min(ev.end.getTime(), monthEnd.getTime()));
+        const startDay = evStart.getDate();
+        const endDay   = evEnd.getDate();
+        const startCol = colForDay(startDay, startDow);
+        const endCol   = colForDay(endDay, startDow);
+        return {
+          ...ev,
+          startDay, endDay, startCol, endCol,
+          clampedLeft:  ev.start < monthStart,
+          clampedRight: ev.end   > monthEnd,
+        };
+      });
+
+    monthEvents.sort((a, b) => {
+      const aDur = a.endDay - a.startDay;
+      const bDur = b.endDay - b.startDay;
+      if (aDur !== bDur) return bDur - aDur;
+      return a.startDay - b.startDay;
+    });
+
+    packEvents(monthEvents);
+
+    for (const ev of monthEvents) {
+      const bar = document.createElement('div');
+      bar.className = 'event-bar' +
+        (ev.clampedLeft  ? ' cont-left'  : '') +
+        (ev.clampedRight ? ' cont-right' : '') +
+        (ev.free ? ' free' : '');
+      bar.style.color = ev.colour;  // used by border via currentColor for free events
+      bar.style.gridColumn = `${ev.startCol} / ${ev.endCol + 1}`;
+      bar.style.gridRow = ev.gridRow;
+      if (ev.colours && ev.colours.length > 1) {
+        const n = ev.colours.length;
+        const stops = ev.colours.flatMap((c, i) =>
+          [`${c} ${(i * 100 / n).toFixed(1)}%`, `${c} ${((i + 1) * 100 / n).toFixed(1)}%`]
+        );
+        bar.style.backgroundImage = `linear-gradient(to bottom, ${stops.join(', ')})`;
+      } else {
+        bar.style.backgroundColor = ev.colour;
+      }
+      bar.textContent = ev.summary;
+      bar.title = `${ev.summary}\n${ev.start.toDateString()} – ${ev.end.toDateString()}`;
+      grid.appendChild(bar);
+    }
+
+    row.appendChild(grid);
+    poster.appendChild(row);
+  }
+}
+
+// ─── Load ────────────────────────────────────────────────────────────
+async function loadCalendars() {
+  const btn = document.getElementById('load-btn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  status.textContent = '';
+
+  const entries = document.querySelectorAll('.cal-entry');
+  const allEvents = [];
+  const errors = [];
+
+  for (const entry of entries) {
+    const url = entry.querySelector('input[type=text]').value.trim();
+    const colour = entry.querySelector('input[type=color]').value;
+    const alldayOnly = entry.querySelector('.allday-only').checked;
+    if (!url) continue;
+    try {
+      status.textContent = `Fetching…`;
+      const evs = await fetchIcal(url, colour, alldayOnly);
+      allEvents.push(...evs);
+      status.textContent = `Loaded ${allEvents.length} events so far…`;
+    } catch (e) {
+      errors.push(e.message);
+    }
+  }
+
+  const merged = mergeEvents(allEvents);
+  lastEvents = merged;
+  const dupeCount = allEvents.length - merged.length;
+  renderPoster(merged);
+  saveUrls();
+
+  if (errors.length) {
+    status.textContent = `Done with errors: ${errors.join('; ')}`;
+    status.style.color = '#c00';
+  } else {
+    status.textContent = `Done — ${merged.length} events` +
+      (dupeCount ? ` (${dupeCount} cross-calendar duplicates merged)` : '') + '.';
+    status.style.color = '#388e3c';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Reload calendars';
+}
+
+// Initial empty render
+renderPoster([]);
+</script>
 </body>
 </html>
